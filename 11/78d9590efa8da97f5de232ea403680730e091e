@@ -1,0 +1,74 @@
+src/app/index.tsx
+  s_aaf56205536ac6::t_5895f7245943c2 2,70-74,86-101,108-109,138,207,241
+  s_aaf56205536ac6::t_c7ba3986183947 242
+src/app/accounts.tsx
+  s_aaf56205536ac6::t_5895f7245943c2 18,30,46,50,86,90,104,107-108,153,165-166,171-172,208-216
+docs/google_play_veri_guvenligi_taslagi.md
+  s_aaf56205536ac6::t_5895f7245943c2 1-20
+docs/google_play_yayin_kontrolu.md
+  s_aaf56205536ac6::t_5895f7245943c2 1-13,15-43
+  s_aaf56205536ac6::t_01fd322fb7119f 14
+app.json
+  s_aaf56205536ac6::t_5895f7245943c2 6,15
+docs/gizlilik_politikasi.md
+  s_aaf56205536ac6::t_01fd322fb7119f 26,28
+  s_aaf56205536ac6::t_5895f7245943c2 1-25,27
+src/app/transfers.tsx
+  s_aaf56205536ac6::t_5895f7245943c2 1-156
+.gitignore
+  s_aaf56205536ac6::t_fb8cfcaae9f596 33-35
+src/data/database.test.mjs
+  s_aaf56205536ac6::t_5895f7245943c2 23-30,60,104,139,141,150,177,179,218,220,229,233,277,279,289-322
+  s_aaf56205536ac6::t_33b7799f8adacc 323-326
+src/data/backup.test.mjs
+  s_aaf56205536ac6::t_80e102b69fc377 101-142
+src/data/repository.ts
+  s_aaf56205536ac6::t_5895f7245943c2 4,45,47-48,81-96,271-272,311,318-319,337-338,350,461-467,473-476,480-488,515-546,548,550-555,557,560-576,578-582,1020-1027,1070,1072,1074,1432-1584
+src/app/_layout.tsx
+  s_aaf56205536ac6::t_5895f7245943c2 34
+scripts/make_store_assets.py
+  s_aaf56205536ac6::t_5895f7245943c2 1-31
+src/data/database.ts
+  s_aaf56205536ac6::t_5895f7245943c2 3,238-276,278-286
+  s_aaf56205536ac6::t_a02a80a87188cb 277,288
+  s_aaf56205536ac6::t_afbe0f5d3a260b 287
+  s_aaf56205536ac6::t_f8fc8d4213f8eb 289-290
+src/app/data.tsx
+  s_aaf56205536ac6::t_5895f7245943c2 122
+src/app/cards.tsx
+  s_aaf56205536ac6::t_5895f7245943c2 7-9,25-26,33,58,66,71,73-76,168-170,179-180,182,188,191,194-196,238-239,244,249-269,278-280,284,379-380
+src/app/plan.tsx
+  s_aaf56205536ac6::t_5895f7245943c2 29,81,91,314,347,363,416,424,512,540,561
+src/data/conversions.test.mjs
+  s_aaf56205536ac6::t_f6b98c964b40ed 28-29,69-126
+  s_aaf56205536ac6::t_3340e648884608 127
+eas.json
+  s_aaf56205536ac6::t_5895f7245943c2 2-4,11-12
+docs/google_play_magaza_metni.md
+  s_aaf56205536ac6::t_5895f7245943c2 1-19
+src/app/privacy.tsx
+  s_aaf56205536ac6::t_01fd322fb7119f 23
+  s_aaf56205536ac6::t_5895f7245943c2 1-22,24-28
+docs/guvenlik_durumu.md
+  s_aaf56205536ac6::t_5895f7245943c2 7,14
+src/data/backupCore.ts
+  s_aaf56205536ac6::t_9d6c0c4dbdf505 9
+src/domain/finance.ts
+  s_aaf56205536ac6::t_5895f7245943c2 80,82-83,114-134,153-154,245-273,390,392
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1178d9590efa8da97f5de232ea403680730e091e",
+  "prompts": {},
+  "sessions": {
+    "s_aaf56205536ac6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a17477-cbbe-7591-b26d-1d4524c2da49",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "MEHMET CELEK <mehmet.celek@atmosware.turkcell.com.tr>"
+    }
+  }
+}
