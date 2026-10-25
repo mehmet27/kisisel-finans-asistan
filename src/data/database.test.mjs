@@ -20,6 +20,14 @@ function adapter(sqlite) {
   };
 }
 
+function addMinimalCardStatements(sqlite) {
+  sqlite.exec(`CREATE TABLE card_statements (
+    id TEXT PRIMARY KEY, payment_account_id TEXT, actual_amount_minor INTEGER,
+    paid_amount_minor INTEGER, status TEXT, paid_on TEXT, due_date TEXT,
+    paid_at TEXT, created_at TEXT
+  )`);
+}
+
 test('v1 verileri korunarak kart şemasına yükseltilir', async () => {
   const sqlite = new DatabaseSync(':memory:');
   try {
@@ -49,7 +57,7 @@ test('v1 verileri korunarak kart şemasına yükseltilir', async () => {
       PRAGMA user_version = 1;
     `);
     await migrateDatabase(adapter(sqlite));
-    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 8);
     assert.equal(sqlite.prepare('SELECT balance_minor, remaining_flexible_minor FROM accounts WHERE id = ?').get('a1').balance_minor, 125000);
     assert.equal(sqlite.prepare('SELECT remaining_flexible_minor FROM accounts WHERE id = ?').get('a1').remaining_flexible_minor, null);
     assert.equal(sqlite.prepare('SELECT actual_minor, remaining_flexible_minor FROM balance_snapshots WHERE id = ?').get('s1').actual_minor, 125000);
@@ -93,7 +101,7 @@ test('v2 hesap ve esnek gider verileri korunarak kart şemasına yükseltilir', 
       PRAGMA user_version = 2;
     `);
     await migrateDatabase(adapter(sqlite));
-    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 8);
     assert.equal(sqlite.prepare('SELECT balance_minor, remaining_flexible_minor FROM accounts WHERE id = ?').get('a1').remaining_flexible_minor, 3000);
     assert.equal(sqlite.prepare('SELECT id FROM flexible_monthly_plans WHERE id = ?').get('f1').id, 'f1');
     assert.ok(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'card_statements'").get());
@@ -128,8 +136,9 @@ test('v3 kart ve hesap verileri korunarak fiyat önbelleğine yükseltilir', asy
       INSERT INTO credit_cards VALUES ('card1', 'Kart', 'try1', 15, 25, 1000, '2026-10-01');
       PRAGMA user_version = 3;
     `);
+    addMinimalCardStatements(sqlite);
     await migrateDatabase(adapter(sqlite));
-    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 8);
     assert.equal(sqlite.prepare("SELECT balance_minor FROM accounts WHERE id = 'usd1'").get().balance_minor, 12345);
     assert.equal(sqlite.prepare("SELECT id FROM credit_cards WHERE id = 'card1'").get().id, 'card1');
     assert.ok(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gold_holdings'").get());
@@ -138,7 +147,7 @@ test('v3 kart ve hesap verileri korunarak fiyat önbelleğine yükseltilir', asy
   }
 });
 
-test('v4 fiyat ve altın kayıtları v7 geçişinde korunur', async () => {
+test('v4 fiyat ve altın kayıtları v8 geçişinde korunur', async () => {
   const sqlite = new DatabaseSync(':memory:');
   try {
     sqlite.exec(`
@@ -165,8 +174,9 @@ test('v4 fiyat ve altın kayıtları v7 geçişinde korunur', async () => {
       INSERT INTO price_quotes VALUES ('USD', 50000000, '2026-10-23', 'ECB', 'https://example.test', '2026-10-25T10:00:00Z');
       PRAGMA user_version = 4;
     `);
+    addMinimalCardStatements(sqlite);
     await migrateDatabase(adapter(sqlite));
-    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 8);
     assert.equal(sqlite.prepare("SELECT balance_minor FROM accounts WHERE id = 'usd1'").get().balance_minor, 12345);
     assert.equal(sqlite.prepare("SELECT quantity_micros FROM gold_holdings WHERE id = 'gold1'").get().quantity_micros, 12500000);
     assert.equal(sqlite.prepare("SELECT price_try_micros FROM price_quotes WHERE asset_code = 'USD'").get().price_try_micros, 50000000);
@@ -205,8 +215,9 @@ test('v5 eski hesap gözlem zamanı gerçek snapshot kaydından tamamlanır', as
         ('conversion', 'a1', '2026-10-25', 125000, 'conversion', '2026-10-25 10:00:00');
       PRAGMA user_version = 5;
     `);
+    addMinimalCardStatements(sqlite);
     await migrateDatabase(adapter(sqlite));
-    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 8);
     const account = sqlite.prepare("SELECT balance_minor, balance_recorded_at FROM accounts WHERE id = 'a1'").get();
     assert.equal(account.balance_minor, 125000);
     assert.equal(account.balance_recorded_at, '2026-10-25T09:00:00.000Z');
@@ -215,11 +226,11 @@ test('v5 eski hesap gözlem zamanı gerçek snapshot kaydından tamamlanır', as
   }
 });
 
-test('yeni kurulum doğrudan v7 şemasına gelir', async () => {
+test('yeni kurulum doğrudan v8 şemasına gelir', async () => {
   const sqlite = new DatabaseSync(':memory:');
   try {
     await migrateDatabase(adapter(sqlite));
-    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 8);
     assert.ok(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'flexible_monthly_plans'").get());
     assert.ok(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'installment_plans'").get());
     assert.ok(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'price_quotes'").get());
@@ -263,13 +274,52 @@ test('v6 planları ve bakiye geçmişi korunarak kategori şemasına yükseltili
          '2026-10-01T08:00:00.000Z', '2026-10-01T08:00:00.000Z');
       PRAGMA user_version = 6;
     `);
+    addMinimalCardStatements(sqlite);
     await migrateDatabase(adapter(sqlite));
-    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 8);
     assert.equal(sqlite.prepare("SELECT category_id FROM monthly_plans WHERE id = 'm1'").get().category_id, null);
     assert.equal(sqlite.prepare("SELECT category_id FROM flexible_monthly_plans WHERE id = 'f1'").get().category_id, null);
     assert.equal(sqlite.prepare("SELECT category_id FROM one_time_plans WHERE id = 'o1'").get().category_id, null);
     assert.equal(sqlite.prepare("SELECT actual_minor FROM balance_snapshots WHERE id = 's1'").get().actual_minor, 100000);
     assert.ok(sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'actual_expenses'").get());
+  } finally {
+    sqlite.close();
+  }
+});
+
+test('v7 kısmi ödenmiş ekstre yeni ödeme geçmişine taşınır ve kalan borç açık kalır', async () => {
+  const sqlite = new DatabaseSync(':memory:');
+  try {
+    sqlite.exec(`
+      CREATE TABLE accounts (id TEXT PRIMARY KEY);
+      CREATE TABLE actual_expenses (id TEXT PRIMARY KEY);
+      CREATE TABLE card_statements (
+        id TEXT PRIMARY KEY, payment_account_id TEXT NOT NULL, actual_amount_minor INTEGER NOT NULL,
+        planned_payment_minor INTEGER NOT NULL, status TEXT NOT NULL, paid_amount_minor INTEGER,
+        paid_on TEXT, paid_at TEXT, due_date TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE TABLE balance_snapshots (
+        id TEXT PRIMARY KEY, account_id TEXT NOT NULL, observed_on TEXT NOT NULL,
+        actual_minor INTEGER NOT NULL, expected_minor INTEGER, difference_minor INTEGER,
+        created_at TEXT NOT NULL, remaining_flexible_minor INTEGER, kind TEXT NOT NULL,
+        expense_id TEXT
+      );
+      INSERT INTO accounts VALUES ('try');
+      INSERT INTO card_statements VALUES
+        ('statement', 'try', 10000, 10000, 'paid', 3000,
+         '2026-10-20', '2026-10-20T12:00:00.000Z', '2026-10-25', '2026-10-01T08:00:00.000Z');
+      INSERT INTO balance_snapshots VALUES
+        ('snapshot', 'try', '2026-10-20', 50000, NULL, NULL,
+         '2026-10-20T12:00:00.000Z', NULL, 'observed', NULL);
+      PRAGMA user_version = 7;
+    `);
+    await migrateDatabase(adapter(sqlite));
+    assert.equal(sqlite.prepare('PRAGMA user_version').get().user_version, 8);
+    const payment = sqlite.prepare("SELECT amount_minor, paid_on FROM card_statement_payments WHERE statement_id = 'statement'").get();
+    assert.equal(payment.amount_minor, 3000);
+    assert.equal(payment.paid_on, '2026-10-20');
+    assert.equal(sqlite.prepare("SELECT status FROM card_statements WHERE id = 'statement'").get().status, 'planned');
+    assert.equal(sqlite.prepare("SELECT actual_minor FROM balance_snapshots WHERE id = 'snapshot'").get().actual_minor, 50000);
   } finally {
     sqlite.close();
   }

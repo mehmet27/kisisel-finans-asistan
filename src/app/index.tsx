@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Link, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -67,6 +67,11 @@ export default function HomeScreen() {
     .sort((left, right) => left.paymentDate.localeCompare(right.paymentDate))
     .slice(0, 3);
   const hasCurrentTry = spendingAccounts.length > 0;
+  const hasMonthlyIncome = plans.some((plan) => plan.kind === 'income' && !plan.endsOn);
+  const hasExpensePlan = plans.some((plan) => plan.kind === 'expense' && !plan.endsOn)
+    || flexiblePlans.some((plan) => !plan.endsOn)
+    || oneTimePlans.some((plan) => plan.kind === 'expense' && plan.status === 'planned');
+  const setupComplete = hasCurrentTry && hasMonthlyIncome && hasExpensePlan;
   const hasPlan = plans.some((plan) => !plan.endsOn) || flexiblePlans.some((plan) => !plan.endsOn) || cards.length > 0 || oneTimePlans.some((plan) => plan.status === 'planned');
   const needsFlexibleEstimate = flexiblePlans.some((plan) =>
     !plan.endsOn && spendingAccounts.some((account) => account.id === plan.accountId && account.remainingFlexibleMinor === null));
@@ -78,12 +83,30 @@ export default function HomeScreen() {
     ...(holdings.length ? ['XAU_GRAM' as AssetCode] : []),
   ]);
   const hasPriceError = priceErrors.some((code) => neededPrices.has(code));
+  const guideCard = (
+    <SectionCard>
+      <Text style={sharedStyles.cardTitle}>Nasıl kullanılır?</Text>
+      <Text style={sharedStyles.helper}>{!hasCurrentTry
+        ? 'Önce TL kullanım hesabını ve bugünkü bakiyeni gir.'
+        : !hasMonthlyIncome ? 'Şimdi aylık maaş veya diğer düzenli gelirini ekle.'
+          : !hasExpensePlan ? 'Şimdi aylık giderini veya değişken gider bütçeni ekle.'
+            : 'Hazırsın. Ay sonu sonucunu incele; bakiyeni ara sıra güncelle.'}</Text>
+      <NavRow href="/accounts" title="1 · Hesap oluştur" subtitle="Banka veya nakit için TL kullanım hesabı aç" />
+      <NavRow href="/accounts" title="2 · İlk bakiyeyi gir" subtitle="Hesabı açarken güncel bakiyeni kaydet" />
+      <NavRow href="/plan" title="3 · Maaş gelirini ekle" subtitle="Aylık gelir ve yattığı hesabı seç" />
+      <NavRow href="/plan" title="4 · Aylık gideri ekle" subtitle="Düzenli gider veya değişken bütçe oluştur" />
+      <NavRow href="/forecast" title="5 · Ay sonu sonucunu gör" subtitle="Hesaplarında ne kalacağını incele" />
+      <Text style={sharedStyles.helper}>Günlük alışverişleri tek tek girmen gerekmez. Bakiyeni ara sıra güncelle.</Text>
+    </SectionCard>
+  );
 
   return (
     <SafeAreaView style={sharedStyles.page} edges={['top']}>
       <ScrollView style={sharedStyles.page} contentContainerStyle={sharedStyles.content}>
         <PageTitle eyebrow="KİŞİSEL FİNANS" title="Varlıklarım" subtitle="Kayıtlı bakiyelerin ve birikimlerinin bugünkü görünümü." />
         {error ? <Notice tone="error" body={error} /> : null}
+        {!ready ? <Notice body="Hesaplar ve aylık plan yükleniyor." /> : null}
+        {ready && !setupComplete ? guideCard : null}
 
         <View style={styles.hero}>
           <Text style={styles.heroLabel}>TOPLAM VARLIK · YAKLAŞIK TL</Text>
@@ -112,6 +135,7 @@ export default function HomeScreen() {
         {ready && hasPriceError ? <Text style={styles.priceWarning}>Fiyat yenilenemedi; varsa son başarılı değer gösteriliyor.</Text> : null}
         <View style={styles.quickActions}>
           <ActionLink href="/accounts" title="Hesap bakiyesi" />
+          <ActionLink href="/transfers" title="Hesaplar arası aktarım" />
           <ActionLink href="/savings" title="Döviz ve altın" />
           <ActionLink href="/plan" title="Maaş geliri ekle" />
         </View>
@@ -180,26 +204,7 @@ export default function HomeScreen() {
           </SectionCard>
         ) : null}
 
-        <SectionCard>
-          <Text style={sharedStyles.cardTitle}>Nasıl kullanılır?</Text>
-          <Link href="/accounts" style={styles.guideLink}>1 · Hesap ekle ve güncel bakiyeni gir →</Link>
-          <Text style={styles.guideText}>2 · Aylık gelir/gider ile kart ve ekstre ödemelerini planla.</Text>
-          <View style={styles.guideActions}>
-            <Link href="/plan" style={styles.guideAction}>Plan →</Link>
-            <Link href="/cards" style={styles.guideAction}>Kartlar →</Link>
-          </View>
-          <Link href="/accounts" style={styles.guideLink}>3 · Bakiyeni ara sıra güncelle, tahmin farkını izle →</Link>
-          <Text style={sharedStyles.helper}>Günlük alışverişleri tek tek girmen gerekmez.</Text>
-        </SectionCard>
-
-        {!ready ? <Notice body="Hesaplar ve aylık plan yükleniyor." /> : null}
-        {ready && accounts.length === 0 ? (
-          <SectionCard>
-            <Text style={sharedStyles.cardTitle}>İlk adım: hesap ekle</Text>
-            <Text style={sharedStyles.helper}>Bir banka veya nakit hesabı ve güncel bakiyesini gir. Aylık planı sonra ekleyebilirsin.</Text>
-            <ActionLink href="/accounts" title="Hesap ekle" />
-          </SectionCard>
-        ) : null}
+        {ready && setupComplete ? guideCard : null}
         {ready && hasCurrentTry && !hasPlan ? (
           <Notice title="Tahmin henüz eksik" body="Gelir, gider veya kart eklenmedi. Bu yüzden ay sonu tahmini yalnızca kayıtlı bakiyeyi gösteriyor." tone="warning" />
         ) : null}
@@ -233,6 +238,8 @@ export default function HomeScreen() {
         <SectionCard>
           <NavRow href="/accounts" title="Hesaplar ve bakiyeler" subtitle="Gerçek bakiyeni güncelle" />
           <View style={styles.separator} />
+          <NavRow href="/transfers" title="Hesaplar arası aktarım" subtitle="TL hesapları arasında para taşı" />
+          <View style={styles.separator} />
           <NavRow href="/plan" title="Gelir ve gider planı" subtitle="Aylık ve tek seferlik kalemler" />
           <View style={styles.separator} />
           <NavRow href="/cards" title="Kartlar ve taksitler" subtitle="Ekstreleri ve ödemeleri izle" />
@@ -264,10 +271,6 @@ const styles = StyleSheet.create({
   accountForecastName: { color: palette.ink, fontSize: 16, fontWeight: '800' },
   accountForecastAmount: { color: palette.primary, fontSize: 19, fontWeight: '800', fontVariant: ['tabular-nums'] },
   negativeAmount: { color: palette.negative },
-  guideLink: { color: palette.ink, fontSize: 14, lineHeight: 20, fontWeight: '700', minHeight: 44, paddingVertical: 10 },
-  guideText: { color: palette.ink, fontSize: 14, lineHeight: 20, fontWeight: '700' },
-  guideActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 18 },
-  guideAction: { color: palette.primaryDark, fontSize: 13, fontWeight: '800', minHeight: 44, paddingVertical: 12 },
   separator: { height: 1, backgroundColor: palette.border, marginHorizontal: 12 },
   count: { color: palette.primary, fontSize: 12, fontWeight: '700' },
   assetRow: { gap: 2, paddingVertical: 4 },

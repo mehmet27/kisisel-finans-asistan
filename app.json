@@ -3,7 +3,7 @@
     "name": "Kişisel Finans Asistanı",
     "slug": "kisisel-finans-asistani",
     "scheme": "kisiselfinans",
-    "version": "1.0.5",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.kisiselfinans.asistani",
-      "versionCode": 6,
+      "versionCode": 7,
       "adaptiveIcon": {
         "backgroundColor": "#123F50",
         "foregroundImage": "./assets/android-icon-foreground.png",

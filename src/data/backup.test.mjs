@@ -98,3 +98,45 @@ test('geri yükleme ortasında hata olursa eski finans verileri korunur', async 
     sourceSqlite.close();
   }
 });
+
+test('yedek TL aktarımlarını ve kısmi kart ödemelerini geri yükler', async () => {
+  const liveSqlite = new DatabaseSync(':memory:');
+  const sourceSqlite = new DatabaseSync(':memory:');
+  try {
+    const live = adapter(liveSqlite);
+    const source = adapter(sourceSqlite);
+    await migrateDatabase(live);
+    await migrateDatabase(source);
+    sourceSqlite.exec(`
+      INSERT INTO accounts (id, name, currency, purpose, balance_minor, balance_date)
+      VALUES ('first', 'İlk', 'TRY', 'spending', 8000, '2026-10-25'),
+             ('second', 'İkinci', 'TRY', 'spending', 2000, '2026-10-25');
+      INSERT INTO try_transfers
+        (id, client_request_id, source_account_id, target_account_id, amount_minor, occurred_at)
+      VALUES ('transfer', 'backup-transfer-1', 'first', 'second', 2000, '2026-10-25T10:00:00Z');
+      INSERT INTO balance_snapshots
+        (id, account_id, observed_on, actual_minor, kind, transfer_id)
+      VALUES ('first-snapshot', 'first', '2026-10-25', 8000, 'transfer', 'transfer'),
+             ('second-snapshot', 'second', '2026-10-25', 2000, 'transfer', 'transfer');
+      INSERT INTO credit_cards (id, name, payment_account_id, closing_day, payment_day, starts_on)
+      VALUES ('card', 'Kart', 'first', 15, 25, '2026-10-01');
+      INSERT INTO card_statements
+        (id, card_id, statement_period, due_date, actual_amount_minor, planned_payment_minor, payment_account_id)
+      VALUES ('statement', 'card', '2026-10', '2026-10-25', 5000, 5000, 'first');
+      INSERT INTO card_statement_payments
+        (id, statement_id, payment_account_id, amount_minor, paid_on, paid_at)
+      VALUES ('payment', 'statement', 'first', 2000, '2026-10-25', '2026-10-25T10:01:00Z');
+    `);
+    await restoreBackupSource(live, source);
+    assert.equal(liveSqlite.prepare('SELECT COUNT(*) AS count FROM balance_snapshots WHERE transfer_id = ?')
+      .get('transfer').count, 2);
+    assert.equal(liveSqlite.prepare('SELECT amount_minor FROM try_transfers WHERE id = ?')
+      .get('transfer').amount_minor, 2000);
+    assert.equal(liveSqlite.prepare('SELECT amount_minor FROM card_statement_payments WHERE id = ?')
+      .get('payment').amount_minor, 2000);
+    assert.equal(liveSqlite.prepare('PRAGMA foreign_key_check').get(), undefined);
+  } finally {
+    liveSqlite.close();
+    sourceSqlite.close();
+  }
+});

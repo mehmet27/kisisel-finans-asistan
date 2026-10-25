@@ -1,6 +1,6 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
-const DATABASE_VERSION = 7;
+const DATABASE_VERSION = 8;
 
 export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
@@ -233,6 +233,59 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
         DROP TABLE balance_snapshots;
         ALTER TABLE balance_snapshots_v7 RENAME TO balance_snapshots;
         CREATE INDEX idx_snapshots_account ON balance_snapshots(account_id, created_at DESC);
+      `);
+    }
+    if (version < 8) {
+      await db.execAsync(`
+        CREATE TABLE try_transfers (
+          id TEXT PRIMARY KEY,
+          client_request_id TEXT NOT NULL UNIQUE,
+          source_account_id TEXT NOT NULL REFERENCES accounts(id),
+          target_account_id TEXT NOT NULL REFERENCES accounts(id),
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          occurred_at TEXT NOT NULL,
+          CHECK (source_account_id <> target_account_id)
+        );
+        CREATE INDEX idx_try_transfers_occurred ON try_transfers(occurred_at);
+        CREATE TABLE card_statement_payments (
+          id TEXT PRIMARY KEY,
+          statement_id TEXT NOT NULL REFERENCES card_statements(id) ON DELETE CASCADE,
+          payment_account_id TEXT NOT NULL REFERENCES accounts(id),
+          amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+          paid_on TEXT NOT NULL,
+          paid_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_card_payments_statement ON card_statement_payments(statement_id, paid_on, paid_at);
+        INSERT INTO card_statement_payments
+          (id, statement_id, payment_account_id, amount_minor, paid_on, paid_at)
+        SELECT 'legacy:' || id, id, payment_account_id, paid_amount_minor,
+               COALESCE(paid_on, due_date), COALESCE(paid_at, created_at)
+        FROM card_statements WHERE status = 'paid' AND paid_amount_minor > 0;
+        UPDATE card_statements SET status = 'planned'
+        WHERE status = 'paid' AND COALESCE(paid_amount_minor, 0) < actual_amount_minor;
+        CREATE TABLE balance_snapshots_v8 (
+          id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+          observed_on TEXT NOT NULL,
+          actual_minor INTEGER NOT NULL,
+          expected_minor INTEGER,
+          difference_minor INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          remaining_flexible_minor INTEGER CHECK (remaining_flexible_minor >= 0),
+          kind TEXT NOT NULL DEFAULT 'observed' CHECK (kind IN ('observed', 'conversion', 'expense', 'transfer')),
+          expense_id TEXT UNIQUE REFERENCES actual_expenses(id),
+          transfer_id TEXT REFERENCES try_transfers(id),
+          explanation TEXT
+        );
+        INSERT INTO balance_snapshots_v8
+          (id, account_id, observed_on, actual_minor, expected_minor, difference_minor,
+           created_at, remaining_flexible_minor, kind, expense_id)
+        SELECT id, account_id, observed_on, actual_minor, expected_minor, difference_minor,
+               created_at, remaining_flexible_minor, kind, expense_id FROM balance_snapshots;
+        DROP TABLE balance_snapshots;
+        ALTER TABLE balance_snapshots_v8 RENAME TO balance_snapshots;
+        CREATE INDEX idx_snapshots_account ON balance_snapshots(account_id, created_at DESC);
+        CREATE INDEX idx_snapshots_transfer ON balance_snapshots(transfer_id);
       `);
     }
     await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);

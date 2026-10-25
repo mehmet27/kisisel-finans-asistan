@@ -25,6 +25,8 @@ const { listAssetConversions, listOneTimePlans, createOneTimePlan, cancelOneTime
   listSnapshots, latestSnapshot, deleteLatestObservedSnapshot,
   createCategory, listCategories, renameCategory, deleteCategory,
   createActualExpense, listActualExpenses, deleteActualExpense, listCategoryMonthlyTotals,
+  recordTryTransfer, deleteTryTransfer, recordCardStatementPayment, deleteCardStatementPayment,
+  listCardStatements,
 } = await import('./repository.ts');
 const { localDateString, monthEnd, projectAccountBalance } = await import('../domain/finance.ts');
 
@@ -63,6 +65,65 @@ async function fixture() {
   sqlite.exec("INSERT INTO gold_holdings (id, name, quantity_micros) VALUES ('gold', 'Gram altın', 5000000)");
   return { sqlite, db };
 }
+
+test('TL aktarımı iki bakiyeyi bir kez değiştirir ve son işlemse geri alınır', async () => {
+  const { sqlite, db } = await fixture();
+  try {
+    sqlite.prepare(`INSERT INTO accounts
+      (id, name, currency, purpose, balance_minor, balance_date, balance_recorded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run('try2', 'İkinci banka', 'TRY', 'spending', 20000,
+      localDateString(), new Date().toISOString());
+    const input = { sourceAccountId: 'try', targetAccountId: 'try2', amountMinor: 30000,
+      requestId: 'transfer-request-0001' };
+    const first = await recordTryTransfer(db, input);
+    assert.equal((await recordTryTransfer(db, input)).id, first.id);
+    assert.equal(sqlite.prepare("SELECT balance_minor FROM accounts WHERE id = 'try'").get().balance_minor, 70000);
+    assert.equal(sqlite.prepare("SELECT balance_minor FROM accounts WHERE id = 'try2'").get().balance_minor, 50000);
+    assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM try_transfers').get().count, 1);
+    await assert.rejects(recordTryTransfer(db, { ...input, requestId: 'transfer-request-0002', amountMinor: 70001 }));
+    await assert.rejects(recordTryTransfer(db, { ...input, amountMinor: 10000 }));
+    await deleteTryTransfer(db, first.id);
+    assert.equal(sqlite.prepare("SELECT balance_minor FROM accounts WHERE id = 'try'").get().balance_minor, 100000);
+    assert.equal(sqlite.prepare("SELECT balance_minor FROM accounts WHERE id = 'try2'").get().balance_minor, 20000);
+    assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM balance_snapshots WHERE kind = \'transfer\'').get().count, 0);
+  } finally {
+    sqlite.close();
+  }
+});
+
+test('ekstreye birden çok kısmi ödeme borcu azaltır; fazla ödeme reddedilir', async () => {
+  const { sqlite, db } = await fixture();
+  try {
+    sqlite.exec(`INSERT INTO credit_cards
+      (id, name, payment_account_id, closing_day, payment_day, starts_on)
+      VALUES ('card', 'Kart', 'try', 15, 25, '2026-10-01');
+      INSERT INTO card_statements
+      (id, card_id, statement_period, due_date, actual_amount_minor, planned_payment_minor, payment_account_id)
+      VALUES ('statement', 'card', '2026-10', '2026-10-25', 10000, 10000, 'try')`);
+    const first = await recordCardStatementPayment(db,
+      { statementId: 'statement', amountMinor: 3000, paidOn: localDateString() });
+    await recordCardStatementPayment(db,
+      { statementId: 'statement', amountMinor: 2000, paidOn: localDateString() });
+    let statement = (await listCardStatements(db))[0];
+    assert.equal(statement.paidTotalMinor, 5000);
+    assert.equal(statement.remainingDebtMinor, 5000);
+    assert.equal(statement.status, 'planned');
+    await assert.rejects(recordCardStatementPayment(db,
+      { statementId: 'statement', amountMinor: 5001, paidOn: localDateString() }));
+    await recordCardStatementPayment(db,
+      { statementId: 'statement', amountMinor: 5000, paidOn: localDateString() });
+    statement = (await listCardStatements(db))[0];
+    assert.equal(statement.remainingDebtMinor, 0);
+    assert.equal(statement.status, 'paid');
+    await deleteCardStatementPayment(db, first.id);
+    statement = (await listCardStatements(db))[0];
+    assert.equal(statement.paidTotalMinor, 7000);
+    assert.equal(statement.remainingDebtMinor, 3000);
+    assert.equal(statement.status, 'planned');
+  } finally {
+    sqlite.close();
+  }
+});
 
 test('döviz bozdurma iki bakiyeyi atomik değiştirir; tekrar gönderim ve yetersiz bakiye ikinci etki yaratmaz', async () => {
   const { sqlite, db } = await fixture();

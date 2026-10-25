@@ -4,8 +4,9 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   createCardStatement, createCreditCard, createInstallmentPlan, deleteCardStatement,
-  deleteCreditCard, deleteInstallmentPlan, listAccounts,
-  listCardStatements, listCreditCards, listInstallmentPlans, markCardStatementPaid,
+  deleteCardStatementPayment, deleteCreditCard, deleteInstallmentPlan, listAccounts,
+  listCardStatementPayments, listCardStatements, listCreditCards, listInstallmentPlans,
+  recordCardStatementPayment,
 } from '@/data/repository';
 import { formatMoney, installmentAmountForPeriod, localDateString, parseAmountMinor } from '@/domain/finance';
 import type { Account, CardStatement, CreditCard, InstallmentPlan } from '@/domain/finance';
@@ -21,12 +22,15 @@ function validDate(value: string): boolean {
   return !Number.isNaN(parsed.getTime()) && localDateString(parsed) === value;
 }
 
+type StatementPayments = Awaited<ReturnType<typeof listCardStatementPayments>>;
+
 export default function CardsScreen() {
   const db = useSQLiteContext();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [cards, setCards] = useState<CreditCard[]>([]);
   const [statements, setStatements] = useState<CardStatement[]>([]);
   const [installments, setInstallments] = useState<InstallmentPlan[]>([]);
+  const [payments, setPayments] = useState<Record<string, StatementPayments>>({});
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [savingAction, setSavingAction] = useState<'card' | 'statement' | 'installment' | 'payment' | null>(null);
@@ -51,6 +55,7 @@ export default function CardsScreen() {
   const [firstPeriod, setFirstPeriod] = useState(localDateString().slice(0, 7));
   const [paying, setPaying] = useState<CardStatement | null>(null);
   const [paidAmount, setPaidAmount] = useState('');
+  const [paidOn, setPaidOn] = useState(localDateString());
   const [paymentConfirming, setPaymentConfirming] = useState(false);
   const [notice, setNotice] = useState('');
 
@@ -58,13 +63,17 @@ export default function CardsScreen() {
     const [nextAccounts, nextCards, nextStatements, nextInstallments] = await Promise.all([
       listAccounts(db), listCreditCards(db), listCardStatements(db), listInstallmentPlans(db),
     ]);
+    const nextPayments = await Promise.all(nextStatements.map((statement) => listCardStatementPayments(db, statement.id)));
     setAccounts(nextAccounts);
     setCards(nextCards);
     setStatements(nextStatements);
     setInstallments(nextInstallments);
+    setPayments(Object.fromEntries(nextStatements.map((statement, index) => [statement.id, nextPayments[index]])));
     const firstTryAccount = nextAccounts.find((account) => account.currency === 'TRY' && account.purpose === 'spending');
-    setCardAccountId((current) => current ?? firstTryAccount?.id ?? null);
-    setStatementAccountId((current) => current ?? nextCards[0]?.paymentAccountId ?? firstTryAccount?.id ?? null);
+    setCardAccountId((current) => nextAccounts.some((account) => account.id === current && account.currency === 'TRY' && account.purpose === 'spending')
+      ? current : firstTryAccount?.id ?? null);
+    setStatementAccountId((current) => nextAccounts.some((account) => account.id === current && account.currency === 'TRY' && account.purpose === 'spending')
+      ? current : nextCards[0]?.paymentAccountId ?? firstTryAccount?.id ?? null);
     setStatementCardId((current) => nextCards.some((card) => card.id === current) ? current : nextCards[0]?.id ?? null);
     setInstallmentCardId((current) => nextCards.some((card) => card.id === current) ? current : nextCards[0]?.id ?? null);
     setReady(true);
@@ -156,8 +165,9 @@ export default function CardsScreen() {
   function confirmPayment() {
     if (!paying) return;
     const amount = parseAmountMinor(paidAmount);
-    if (amount === null || amount <= 0 || amount > paying.actualAmountMinor) {
-      setError('Ödenen tutar 0’dan büyük ve en fazla ekstre tutarı kadar olmalı.');
+    const remaining = paying.remainingDebtMinor ?? paying.actualAmountMinor - (paying.paidAmountMinor ?? 0);
+    if (amount === null || amount <= 0 || amount > remaining || !validDate(paidOn) || paidOn > localDateString()) {
+      setError('Ödeme tutarı 0’dan büyük ve kalan borcu aşmayacak kadar olmalı; tarih bugün veya önceki geçerli bir gün olmalı.');
       return;
     }
     setPaymentConfirming(true);
@@ -166,22 +176,24 @@ export default function CardsScreen() {
   async function savePayment() {
     if (!paying) return;
     const amount = parseAmountMinor(paidAmount);
-    if (amount === null || amount <= 0 || amount > paying.actualAmountMinor) {
+    const remaining = paying.remainingDebtMinor ?? paying.actualAmountMinor - (paying.paidAmountMinor ?? 0);
+    if (amount === null || amount <= 0 || amount > remaining || !validDate(paidOn) || paidOn > localDateString()) {
       setPaymentConfirming(false);
-      setError('Ödenen tutar 0’dan büyük ve en fazla ekstre tutarı kadar olmalı.');
+      setError('Ödeme tutarı kalan borcu aşamaz; tarihi de kontrol et.');
       return;
     }
     setSavingAction('payment');
     setError('');
     try {
-      await markCardStatementPaid(db, paying.id, amount);
+      await recordCardStatementPayment(db, { statementId: paying.id, amountMinor: amount, paidOn });
       setPaying(null);
       setPaidAmount('');
+      setPaidOn(localDateString());
       setPaymentConfirming(false);
       await refresh();
-      setNotice('Ekstre ödemesi kaydedildi.');
-    } catch {
-      setError('Ödeme kaydedilemedi. Tekrar dene.');
+      setNotice(`Ekstre ödemesi kaydedildi. Kalan borç: ${formatMoney(remaining - amount, 'TRY')}.`);
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : 'Ödeme kaydedilemedi. Tekrar dene.');
     } finally {
       setSavingAction(null);
     }
@@ -223,28 +235,38 @@ export default function CardsScreen() {
       {statements.map((statement) => {
         const card = cards.find((item) => item.id === statement.cardId);
         const account = accounts.find((item) => item.id === statement.paymentAccountId);
-        const remaining = statement.actualAmountMinor - (statement.paidAmountMinor ?? 0);
+        const paidTotal = statement.paidTotalMinor ?? statement.paidAmountMinor ?? 0;
+        const remaining = statement.remainingDebtMinor ?? statement.actualAmountMinor - paidTotal;
         return (
           <SectionCard key={statement.id}>
             <View style={sharedStyles.row}>
               <Text style={styles.rowTitle}>{card?.name ?? 'Kart'} · {statement.statementPeriod}</Text>
-              <Text style={[styles.status, statement.status === 'paid' && styles.statusPaid]}>{statement.status === 'paid' ? (remaining > 0 ? 'Kısmi ödeme' : 'Ödendi') : 'Ödeme bekliyor'}</Text>
+              <Text style={[styles.status, paidTotal > 0 && styles.statusPaid]}>{remaining <= 0 ? 'Ödendi' : paidTotal > 0 ? 'Kısmi ödeme' : 'Ödeme bekliyor'}</Text>
             </View>
             <View style={sharedStyles.row}><Text style={styles.rowLabel}>Ekstre tutarı</Text><Text style={styles.rowAmount}>{formatMoney(statement.actualAmountMinor, 'TRY')}</Text></View>
             <View style={sharedStyles.row}><Text style={styles.rowLabel}>Planlanan ödeme</Text><Text style={styles.rowAmount}>{formatMoney(statement.plannedPaymentMinor, 'TRY')}</Text></View>
             <Text style={sharedStyles.muted}>Son ödeme: {statement.dueDate} · {account?.name ?? 'Hesap bulunamadı'}</Text>
-            {statement.status === 'paid' ? (
-              <>
-                <Text style={sharedStyles.muted}>Ödenen: {formatMoney(statement.paidAmountMinor ?? 0, 'TRY')} · {statement.paidOn}</Text>
-                {remaining > 0 ? (
-                  <>
-                    <Text style={styles.remaining}>Kalan borç: {formatMoney(remaining, 'TRY')}</Text>
-                    <Text style={sharedStyles.helper}>Bu sürümde ek ödeme ayrı kaydedilmez. Sonraki gerçek ekstreyi kalan borcu içeren güncel tutarla gir.</Text>
-                  </>
-                ) : null}
-              </>
-            ) : <ActionButton title="Ödemeyi kaydet" secondary onPress={() => { setPaying(statement); setPaidAmount((statement.plannedPaymentMinor / 100).toFixed(2).replace('.', ',')); setPaymentConfirming(false); setError(''); }} />}
-            <InlineDelete itemName="Ekstreyi" onDelete={async () => { await deleteCardStatement(db, statement.id); await refresh(); setNotice('Ekstre silindi.'); }} disabled={savingAction !== null} detail="Ekstre, ödeme işareti ve bu döneme ait gerçek tutar tahminden çıkarılır." />
+            <Text style={sharedStyles.muted}>Toplam ödenen: {formatMoney(paidTotal, 'TRY')}</Text>
+            <Text style={[styles.remaining, remaining <= 0 && styles.paidText]}>Kalan borç: {formatMoney(Math.max(0, remaining), 'TRY')}</Text>
+            {(payments[statement.id] ?? []).map((payment) => (
+              <View key={payment.id} style={styles.paymentItem}>
+                <Text style={sharedStyles.muted}>{payment.paidOn} · Ödeme: {formatMoney(payment.amountMinor, 'TRY')}</Text>
+                <InlineDelete itemName="Ödemeyi" onDelete={async () => {
+                  await deleteCardStatementPayment(db, payment.id);
+                  if (paying?.id === statement.id) setPaying(null);
+                  await refresh();
+                  setNotice('Ödeme kaydı silindi; kalan borç yeniden hesaplandı.');
+                }} disabled={savingAction !== null} detail="Bu ödeme tahminden çıkarılır ve kalan borç yeniden hesaplanır." />
+              </View>
+            ))}
+            {remaining > 0 ? <ActionButton title={paidTotal > 0 ? 'Kalan borca ödeme ekle' : 'Ödeme kaydet'} secondary onPress={() => {
+              setPaying(statement);
+              setPaidAmount((Math.min(remaining, statement.plannedPaymentMinor || remaining) / 100).toFixed(2).replace('.', ','));
+              setPaidOn(localDateString());
+              setPaymentConfirming(false);
+              setError('');
+            }} /> : null}
+            <InlineDelete itemName="Ekstreyi" onDelete={async () => { await deleteCardStatement(db, statement.id); await refresh(); setNotice('Ekstre silindi.'); }} disabled={savingAction !== null} detail="Ödeme kayıtları varsa önce onları silmelisin. Ekstre silinince bu dönemin gerçek tutarı tahminden çıkarılır." />
           </SectionCard>
         );
       })}
@@ -253,11 +275,13 @@ export default function CardsScreen() {
           <Text style={sharedStyles.cardTitle}>Gerçekleşen ödemeyi gir</Text>
           <Text style={sharedStyles.helper}>Gerçekleşen ödeme TL hesabının tahminine yansır. Eksik ödemede kalan borç görünür; faiz otomatik hesaplanmaz.</Text>
           <Text style={sharedStyles.label}>Ödenen tutar (TL)</Text>
-          <TextInput accessibilityLabel="Gerçekleşen ekstre ödeme tutarı" value={paidAmount} onChangeText={setPaidAmount} keyboardType="decimal-pad" placeholder="Örnek: 5000,00" style={sharedStyles.input} />
+          <TextInput accessibilityLabel="Gerçekleşen ekstre ödeme tutarı" value={paidAmount} onChangeText={(value) => { setPaidAmount(value); setPaymentConfirming(false); }} keyboardType="decimal-pad" placeholder="Örnek: 5000,00" style={sharedStyles.input} />
+          <Text style={sharedStyles.label}>Ödeme tarihi (YYYY-AA-GG)</Text>
+          <TextInput accessibilityLabel="Ekstre ödeme tarihi" value={paidOn} onChangeText={(value) => { setPaidOn(value); setPaymentConfirming(false); }} placeholder="2026-10-25" style={sharedStyles.input} />
           {paymentConfirming ? (
             <View style={styles.confirmBox}>
               <Text style={sharedStyles.cardTitle}>{formatMoney(parseAmountMinor(paidAmount) ?? 0, 'TRY')} ödeme kaydedilsin mi?</Text>
-              <Text style={sharedStyles.helper}>Bu tutar ekstreye ve ödeme hesabının tahminine yansır.</Text>
+              <Text style={sharedStyles.helper}>{paidOn} tarihinde ekstreye ve ödeme hesabının tahminine yansır. Kalan borç: {formatMoney((paying.remainingDebtMinor ?? paying.actualAmountMinor - (paying.paidAmountMinor ?? 0)) - (parseAmountMinor(paidAmount) ?? 0), 'TRY')}.</Text>
               <ActionButton title="Evet, ödemeyi kaydet" onPress={savePayment} disabled={savingAction !== null} loading={savingAction === 'payment'} />
               <ActionButton title="Geri dön" secondary onPress={() => setPaymentConfirming(false)} disabled={savingAction !== null} />
             </View>
@@ -352,5 +376,7 @@ const styles = StyleSheet.create({
   status: { color: palette.warning, backgroundColor: palette.warningSoft, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 7, overflow: 'hidden', fontSize: 11, fontWeight: '700' },
   statusPaid: { color: palette.positive, backgroundColor: palette.positiveSoft },
   remaining: { color: palette.negative, fontSize: 13, fontWeight: '700' },
+  paidText: { color: palette.positive },
+  paymentItem: { borderTopWidth: 1, borderTopColor: palette.border, paddingTop: 10, gap: 8 },
   confirmBox: { backgroundColor: palette.primarySoft, borderRadius: 12, padding: 12, gap: 9 },
 });

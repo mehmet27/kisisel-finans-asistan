@@ -119,6 +119,7 @@ export default function DataScreen() {
   return (
     <ScrollView style={sharedStyles.page} contentContainerStyle={sharedStyles.content} keyboardShouldPersistTaps="handled">
       <PageTitle eyebrow="VERİLERİN" title="Yedek ve geri yükleme" subtitle="Finans kayıtların telefonunda saklanır. Şifreli yedeği kendin güvenli bir konuma kaydedebilirsin." />
+      <ActionButton title="Gizlilik politikası" secondary onPress={() => router.push('/privacy')} />
       {error ? <Notice tone="error" body={error} /> : null}
       {notice ? <Notice body={notice} /> : null}
 

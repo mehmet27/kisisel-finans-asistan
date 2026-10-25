@@ -6,6 +6,7 @@ const TABLES = [
   'accounts', 'balance_snapshots', 'monthly_plans', 'flexible_monthly_plans',
   'credit_cards', 'card_statements', 'installment_plans', 'gold_holdings',
   'price_quotes', 'asset_conversions', 'one_time_plans', 'categories', 'actual_expenses',
+  'try_transfers', 'card_statement_payments',
 ] as const;
 
 type SqlValue = string | number | null | boolean | Uint8Array | ArrayBuffer;

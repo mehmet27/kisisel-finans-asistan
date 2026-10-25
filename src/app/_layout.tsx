@@ -31,6 +31,7 @@ export default function RootLayout() {
       }}>
         <Stack.Screen name="index" options={{ title: 'Özet', headerShown: false }} />
         <Stack.Screen name="accounts" options={{ title: 'Hesaplar' }} />
+        <Stack.Screen name="transfers" options={{ title: 'Hesaplar arası aktarım' }} />
         <Stack.Screen name="plan" options={{ title: 'Gelir ve gider planı' }} />
         <Stack.Screen name="cards" options={{ title: 'Kartlar ve taksitler' }} />
         <Stack.Screen name="savings" options={{ title: 'Birikimler' }} />

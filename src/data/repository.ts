@@ -1,7 +1,7 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 import * as Crypto from 'expo-crypto';
 import { localDateString, monthEnd, projectAccountBalance } from '../domain/finance';
-import type { Account, AccountPurpose, ActualExpense, BalanceSnapshot, CardStatement, Category, CategoryMonthlyTotal, CreditCard, Currency, FlexibleMonthlyPlan, InstallmentPlan, MonthlyPlan, OneTimePlan, PlanKind } from '../domain/finance';
+import type { Account, AccountPurpose, ActualExpense, BalanceSnapshot, CardStatement, CardStatementPayment, Category, CategoryMonthlyTotal, CreditCard, Currency, FlexibleMonthlyPlan, InstallmentPlan, MonthlyPlan, OneTimePlan, PlanKind, TryTransfer } from '../domain/finance';
 import type { AssetCode, GoldHolding, PriceQuote } from '../domain/valuation';
 import { ConversionError, previewFxConversion, previewGoldConversion } from '../domain/conversions';
 import type { AssetConversion } from '../domain/conversions';
@@ -42,8 +42,10 @@ interface FlexiblePlanRow {
 
 interface SnapshotRow {
   id: string;
-  kind: 'observed' | 'conversion' | 'expense';
+  kind: 'observed' | 'conversion' | 'expense' | 'transfer';
   expense_id: string | null;
+  transfer_id: string | null;
+  explanation: string | null;
   account_id: string;
   observed_on: string;
   actual_minor: number;
@@ -74,6 +76,22 @@ interface StatementRow {
   paid_on: string | null;
   paid_at: string | null;
   paid_amount_minor: number | null;
+}
+
+interface CardStatementPaymentRow {
+  id: string;
+  statement_id: string;
+  payment_account_id: string;
+  amount_minor: number;
+  paid_on: string;
+  paid_at: string;
+}
+
+function mapCardStatementPayment(row: CardStatementPaymentRow): CardStatementPayment {
+  return {
+    id: row.id, statementId: row.statement_id, paymentAccountId: row.payment_account_id,
+    amountMinor: row.amount_minor, paidOn: row.paid_on, paidAt: row.paid_at,
+  };
 }
 
 interface InstallmentRow {
@@ -250,6 +268,8 @@ function mapSnapshot(row: SnapshotRow): BalanceSnapshot {
     id: row.id,
     kind: row.kind,
     expenseId: row.expense_id,
+    transferId: row.transfer_id,
+    explanation: row.explanation,
     accountId: row.account_id,
     observedOn: row.observed_on,
     actualMinor: row.actual_minor,
@@ -288,12 +308,15 @@ export async function updateBalance(
   account: Account,
   actualMinor: number,
   remainingFlexibleMinor?: number | null,
+  explanation?: string | null,
 ): Promise<BalanceSnapshot> {
   if (!Number.isSafeInteger(actualMinor)) throw new Error('Geçersiz bakiye.');
   if (remainingFlexibleMinor != null && (!Number.isSafeInteger(remainingFlexibleMinor) || remainingFlexibleMinor < 0)) {
     throw new Error('Kalan değişken harcama geçersiz.');
   }
   const remaining = remainingFlexibleMinor ?? null;
+  const note = explanation?.trim() || null;
+  if (note && note.length > 500) throw new Error('Bakiye farkı açıklaması en fazla 500 karakter olabilir.');
   const observedOn = localDateString();
   const recordedAt = new Date().toISOString();
   const [plans, flexiblePlans, cards, statements, installments, oneTimePlans] = await Promise.all([
@@ -311,8 +334,8 @@ export async function updateBalance(
       actualMinor, observedOn, recordedAt, remaining, account.id,
     );
     await db.runAsync(
-      'INSERT INTO balance_snapshots (id, account_id, observed_on, actual_minor, expected_minor, difference_minor, remaining_flexible_minor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      snapshotId, account.id, observedOn, actualMinor, expectedMinor, differenceMinor, remaining, recordedAt,
+      'INSERT INTO balance_snapshots (id, account_id, observed_on, actual_minor, expected_minor, difference_minor, remaining_flexible_minor, created_at, explanation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      snapshotId, account.id, observedOn, actualMinor, expectedMinor, differenceMinor, remaining, recordedAt, note,
     );
   }));
   return {
@@ -324,6 +347,7 @@ export async function updateBalance(
     expectedMinor,
     differenceMinor,
     remainingFlexibleMinor: remaining,
+    explanation: note,
   };
 }
 
@@ -434,15 +458,32 @@ export async function createCreditCard(
 }
 
 export async function listCardStatements(db: SQLiteDatabase): Promise<CardStatement[]> {
-  const rows = await db.getAllAsync<StatementRow>(
-    'SELECT * FROM card_statements ORDER BY statement_period DESC, due_date DESC, rowid DESC',
-  );
+  const [rows, paymentRows] = await Promise.all([
+    db.getAllAsync<StatementRow>('SELECT * FROM card_statements ORDER BY statement_period DESC, due_date DESC, rowid DESC'),
+    db.getAllAsync<CardStatementPaymentRow>('SELECT * FROM card_statement_payments ORDER BY paid_on, paid_at, rowid'),
+  ]);
+  const grouped = new Map<string, CardStatementPayment[]>();
+  for (const row of paymentRows) grouped.set(row.statement_id,
+    [...(grouped.get(row.statement_id) ?? []), mapCardStatementPayment(row)]);
   return rows.map((row) => ({
     id: row.id, cardId: row.card_id, statementPeriod: row.statement_period, dueDate: row.due_date,
     actualAmountMinor: row.actual_amount_minor, plannedPaymentMinor: row.planned_payment_minor,
     paymentAccountId: row.payment_account_id, status: row.status, paidOn: row.paid_on, paidAt: row.paid_at,
     paidAmountMinor: row.paid_amount_minor,
+    payments: grouped.get(row.id) ?? [],
+    paidTotalMinor: (grouped.get(row.id) ?? []).reduce((sum, payment) => sum + payment.amountMinor, 0),
+    remainingDebtMinor: Math.max(0, row.actual_amount_minor
+      - (grouped.get(row.id) ?? []).reduce((sum, payment) => sum + payment.amountMinor, 0)),
   }));
+}
+
+export async function listCardStatementPayments(
+  db: SQLiteDatabase, statementId: string,
+): Promise<CardStatementPayment[]> {
+  const rows = await db.getAllAsync<CardStatementPaymentRow>(
+    'SELECT * FROM card_statement_payments WHERE statement_id = ? ORDER BY paid_on, paid_at, rowid', statementId,
+  );
+  return rows.map(mapCardStatementPayment);
 }
 
 export async function createCardStatement(
@@ -471,20 +512,74 @@ export async function markCardStatementPaid(
   id: string,
   paidAmountMinor?: number,
 ): Promise<void> {
+  const statement = (await listCardStatements(db)).find((row) => row.id === id);
+  if (!statement) throw new Error('Ekstre bulunamadı.');
+  const amount = paidAmountMinor ?? Math.min(
+    statement.remainingDebtMinor ?? statement.actualAmountMinor,
+    Math.max(0, statement.plannedPaymentMinor - (statement.paidTotalMinor ?? 0)),
+  );
+  await recordCardStatementPayment(db, { statementId: id, amountMinor: amount, paidOn: localDateString() });
+}
+
+async function refreshStatementPaymentSummary(db: SQLiteDatabase, statement: StatementRow): Promise<void> {
+  const rows = await db.getAllAsync<CardStatementPaymentRow>(
+    'SELECT * FROM card_statement_payments WHERE statement_id = ? ORDER BY paid_on DESC, paid_at DESC, rowid DESC',
+    statement.id,
+  );
+  const total = rows.reduce((sum, row) => sum + row.amount_minor, 0);
+  const latest = rows[0];
+  await db.runAsync(
+    `UPDATE card_statements SET status = ?, paid_on = ?, paid_at = ?, paid_amount_minor = ? WHERE id = ?`,
+    total >= statement.actual_amount_minor ? 'paid' : 'planned',
+    latest?.paid_on ?? null, latest?.paid_at ?? null, total > 0 ? total : null, statement.id,
+  );
+}
+
+export async function recordCardStatementPayment(
+  db: SQLiteDatabase,
+  input: { statementId: string; amountMinor: number; paidOn: string },
+): Promise<CardStatementPayment> {
+  if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0
+    || !isDate(input.paidOn) || input.paidOn > localDateString()) {
+    throw new Error('Ödeme tutarı veya tarihi geçersiz.');
+  }
+  let payment: CardStatementPayment | undefined;
   await withRepositoryWrite(db, () => db.withTransactionAsync(async () => {
-    const statement = await db.getFirstAsync<StatementRow>('SELECT * FROM card_statements WHERE id = ?', id);
+    const statement = await db.getFirstAsync<StatementRow>('SELECT * FROM card_statements WHERE id = ?', input.statementId);
     if (!statement) throw new Error('Ekstre bulunamadı.');
-    if (statement.status === 'paid') throw new Error('Bu ödeme zaten kaydedildi.');
-    const amount = paidAmountMinor ?? statement.planned_payment_minor;
-    if (!Number.isSafeInteger(amount) || amount <= 0 || amount > statement.actual_amount_minor) {
-      throw new Error('Geçersiz ödeme tutarı.');
+    const row = await db.getFirstAsync<{ total: number }>(
+      'SELECT COALESCE(SUM(amount_minor), 0) AS total FROM card_statement_payments WHERE statement_id = ?', statement.id,
+    );
+    const paid = row?.total ?? 0;
+    if (!Number.isSafeInteger(paid + input.amountMinor) || paid + input.amountMinor > statement.actual_amount_minor) {
+      throw new Error('Ödeme toplamı ekstre borcunu aşamaz.');
     }
-    const paidOn = localDateString();
+    const id = Crypto.randomUUID();
     const paidAt = new Date().toISOString();
     await db.runAsync(
-      "UPDATE card_statements SET status = 'paid', paid_on = ?, paid_at = ?, paid_amount_minor = ? WHERE id = ?",
-      paidOn, paidAt, amount, id,
+      `INSERT INTO card_statement_payments
+        (id, statement_id, payment_account_id, amount_minor, paid_on, paid_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      id, statement.id, statement.payment_account_id, input.amountMinor, input.paidOn, paidAt,
     );
+    await refreshStatementPaymentSummary(db, statement);
+    payment = { id, statementId: statement.id, paymentAccountId: statement.payment_account_id,
+      amountMinor: input.amountMinor, paidOn: input.paidOn, paidAt };
+  }));
+  if (!payment) throw new Error('Ekstre ödemesi kaydedilemedi.');
+  return payment;
+}
+
+export async function deleteCardStatementPayment(db: SQLiteDatabase, id: string): Promise<void> {
+  await withRepositoryWrite(db, () => db.withTransactionAsync(async () => {
+    const payment = await db.getFirstAsync<CardStatementPaymentRow>(
+      'SELECT * FROM card_statement_payments WHERE id = ?', id,
+    );
+    if (!payment) missingRecord();
+    const statement = await db.getFirstAsync<StatementRow>('SELECT * FROM card_statements WHERE id = ?', payment.statement_id);
+    if (!statement) missingRecord();
+    await db.runAsync('DELETE FROM card_statement_payments WHERE id = ?', id);
+    await refreshStatementPaymentSummary(db, statement);
   }));
 }
 
@@ -922,8 +1017,14 @@ async function deletePlanWithExpenseGuard(
 }
 
 export async function deleteCardStatement(db: SQLiteDatabase, id: string): Promise<void> {
-  // Payment status changes projections only; no account balance is directly debited.
-  await deleteSimpleRecord(db, 'card_statements', id);
+  await withRepositoryWrite(db, () => db.withTransactionAsync(async () => {
+    const linked = await db.getFirstAsync<{ id: string }>(
+      'SELECT id FROM card_statement_payments WHERE statement_id = ? LIMIT 1', id,
+    );
+    if (linked) dependentRecord('Ekstreye bağlı ödeme kayıtları var. Önce ödemeleri silin.');
+    const result = await db.runAsync('DELETE FROM card_statements WHERE id = ?', id);
+    if (result.changes === 0) missingRecord();
+  }));
 }
 
 export async function deleteInstallmentPlan(db: SQLiteDatabase, id: string): Promise<void> {
@@ -966,10 +1067,11 @@ export async function deleteAccount(db: SQLiteDatabase, id: string): Promise<voi
        UNION ALL SELECT id FROM credit_cards WHERE payment_account_id = ?
        UNION ALL SELECT id FROM card_statements WHERE payment_account_id = ?
        UNION ALL SELECT id FROM actual_expenses WHERE account_id = ?
+       UNION ALL SELECT id FROM try_transfers WHERE source_account_id = ? OR target_account_id = ?
        UNION ALL SELECT id FROM asset_conversions WHERE source_account_id = ? OR target_account_id = ?
-       LIMIT 1`, id, id, id, id, id, id, id, id,
+       LIMIT 1`, id, id, id, id, id, id, id, id, id, id,
     );
-    if (dependencies) dependentRecord('Hesaba bağlı plan, harcama, kart, ekstre veya dönüşüm var. Önce bağlı kayıtları silin.');
+    if (dependencies) dependentRecord('Hesaba bağlı plan, harcama, kart, ekstre veya transfer var. Önce bağlı kayıtları silin.');
     // The account's observed balance history belongs to it and cascades with the account.
     await db.runAsync('DELETE FROM accounts WHERE id = ?', id);
   }));
@@ -1326,4 +1428,157 @@ export async function listCategoryMonthlyTotals(
   return [...totals.values()].sort((a, b) =>
     a.currency.localeCompare(b.currency) || a.categoryName.localeCompare(b.categoryName, 'tr')
     || (a.categoryId ?? '').localeCompare(b.categoryId ?? ''));
+}
+
+interface TryTransferRow {
+  id: string;
+  client_request_id: string;
+  source_account_id: string;
+  target_account_id: string;
+  amount_minor: number;
+  occurred_at: string;
+}
+
+function mapTryTransfer(row: TryTransferRow): TryTransfer {
+  return {
+    id: row.id, requestId: row.client_request_id,
+    sourceAccountId: row.source_account_id, targetAccountId: row.target_account_id,
+    amountMinor: row.amount_minor, occurredAt: row.occurred_at,
+  };
+}
+
+export async function listTryTransfers(db: SQLiteDatabase): Promise<TryTransfer[]> {
+  const rows = await db.getAllAsync<TryTransferRow>(
+    'SELECT * FROM try_transfers ORDER BY occurred_at DESC, rowid DESC',
+  );
+  return rows.map(mapTryTransfer);
+}
+
+export async function recordTryTransfer(
+  db: SQLiteDatabase,
+  input: { sourceAccountId: string; targetAccountId: string; amountMinor: number; requestId: string },
+): Promise<TryTransfer> {
+  if (input.sourceAccountId === input.targetAccountId || !Number.isSafeInteger(input.amountMinor)
+    || input.amountMinor <= 0 || !/^[A-Za-z0-9_-]{8,100}$/.test(input.requestId)) {
+    throw new Error('Geçersiz transfer hesapları, tutarı veya işlem kimliği.');
+  }
+  let result: TryTransfer | undefined;
+  await withRepositoryWrite(db, () => db.withTransactionAsync(async () => {
+    const existing = await db.getFirstAsync<TryTransferRow>(
+      'SELECT * FROM try_transfers WHERE client_request_id = ?', input.requestId,
+    );
+    if (existing) {
+      if (existing.source_account_id !== input.sourceAccountId
+        || existing.target_account_id !== input.targetAccountId || existing.amount_minor !== input.amountMinor) {
+        throw new Error('İşlem kimliği farklı bir transfer için kullanılmış.');
+      }
+      result = mapTryTransfer(existing);
+      return;
+    }
+    const source = await db.getFirstAsync<AccountBalanceRow>(
+      'SELECT id, currency, purpose, balance_minor, balance_date, balance_recorded_at, remaining_flexible_minor FROM accounts WHERE id = ?',
+      input.sourceAccountId,
+    );
+    const target = await db.getFirstAsync<AccountBalanceRow>(
+      'SELECT id, currency, purpose, balance_minor, balance_date, balance_recorded_at, remaining_flexible_minor FROM accounts WHERE id = ?',
+      input.targetAccountId,
+    );
+    if (!source || !target || source.currency !== 'TRY' || target.currency !== 'TRY') {
+      throw new Error('Transfer için iki TL hesabı seçin.');
+    }
+    if (source.balance_minor < input.amountMinor) throw new Error('Kaynak TL bakiyesi yetersiz.');
+    const sourceAfter = source.balance_minor - input.amountMinor;
+    const targetAfter = target.balance_minor + input.amountMinor;
+    if (!Number.isSafeInteger(sourceAfter) || !Number.isSafeInteger(targetAfter)) {
+      throw new Error('Transfer sonrası bakiye sayı aralığını aşıyor.');
+    }
+    const id = Crypto.randomUUID();
+    const occurredAt = new Date().toISOString();
+    const today = localDateString();
+    await db.runAsync(
+      `INSERT INTO try_transfers
+        (id, client_request_id, source_account_id, target_account_id, amount_minor, occurred_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      id, input.requestId, source.id, target.id, input.amountMinor, occurredAt,
+    );
+    await db.runAsync('UPDATE accounts SET balance_minor = ? WHERE id = ?', sourceAfter, source.id);
+    await db.runAsync('UPDATE accounts SET balance_minor = ? WHERE id = ?', targetAfter, target.id);
+    await db.runAsync(
+      `INSERT INTO balance_snapshots
+        (id, account_id, observed_on, actual_minor, remaining_flexible_minor, kind, transfer_id, created_at)
+       VALUES (?, ?, ?, ?, ?, 'transfer', ?, ?)`,
+      Crypto.randomUUID(), source.id, today, sourceAfter, source.remaining_flexible_minor, id, occurredAt,
+    );
+    await db.runAsync(
+      `INSERT INTO balance_snapshots
+        (id, account_id, observed_on, actual_minor, remaining_flexible_minor, kind, transfer_id, created_at)
+       VALUES (?, ?, ?, ?, ?, 'transfer', ?, ?)`,
+      Crypto.randomUUID(), target.id, today, targetAfter, target.remaining_flexible_minor, id, occurredAt,
+    );
+    result = { id, requestId: input.requestId, sourceAccountId: source.id,
+      targetAccountId: target.id, amountMinor: input.amountMinor, occurredAt };
+  }));
+  if (!result) throw new Error('Transfer kaydı tamamlanamadı.');
+  return result;
+}
+
+export async function deleteTryTransfer(db: SQLiteDatabase, id: string): Promise<void> {
+  await withRepositoryWrite(db, () => db.withTransactionAsync(async () => {
+    const transfer = await db.getFirstAsync<TryTransferRow>('SELECT * FROM try_transfers WHERE id = ?', id);
+    if (!transfer) missingRecord();
+    const source = await db.getFirstAsync<AccountBalanceRow>(
+      'SELECT id, currency, purpose, balance_minor, balance_date, balance_recorded_at, remaining_flexible_minor FROM accounts WHERE id = ?',
+      transfer.source_account_id,
+    );
+    const target = await db.getFirstAsync<AccountBalanceRow>(
+      'SELECT id, currency, purpose, balance_minor, balance_date, balance_recorded_at, remaining_flexible_minor FROM accounts WHERE id = ?',
+      transfer.target_account_id,
+    );
+    const sourceSnapshot = await db.getFirstAsync<SnapshotRow>(
+      'SELECT * FROM balance_snapshots WHERE account_id = ? ORDER BY rowid DESC LIMIT 1', transfer.source_account_id,
+    );
+    const targetSnapshot = await db.getFirstAsync<SnapshotRow>(
+      'SELECT * FROM balance_snapshots WHERE account_id = ? ORDER BY rowid DESC LIMIT 1', transfer.target_account_id,
+    );
+    if (!source || !target || sourceSnapshot?.transfer_id !== id || targetSnapshot?.transfer_id !== id
+      || sourceSnapshot.kind !== 'transfer' || targetSnapshot.kind !== 'transfer'
+      || sourceSnapshot.actual_minor !== source.balance_minor || targetSnapshot.actual_minor !== target.balance_minor) {
+      unsafeReversal('Transferden sonra hesap bakiyesi veya başka işlem değişmiş. Önce son hareketi geri alın.');
+    }
+    const sourceBefore = source.balance_minor + transfer.amount_minor;
+    const targetBefore = target.balance_minor - transfer.amount_minor;
+    if (!Number.isSafeInteger(sourceBefore) || !Number.isSafeInteger(targetBefore)) {
+      unsafeReversal('Transfer geri alma tutarı sayı aralığını aşıyor.');
+    }
+    await db.runAsync('DELETE FROM balance_snapshots WHERE id = ?', sourceSnapshot.id);
+    await db.runAsync('DELETE FROM balance_snapshots WHERE id = ?', targetSnapshot.id);
+    await db.runAsync('UPDATE accounts SET balance_minor = ? WHERE id = ?', sourceBefore, source.id);
+    await db.runAsync('UPDATE accounts SET balance_minor = ? WHERE id = ?', targetBefore, target.id);
+    await db.runAsync('DELETE FROM try_transfers WHERE id = ?', id);
+  }));
+}
+
+export async function resetAllLocalData(db: SQLiteDatabase): Promise<void> {
+  await withRepositoryWrite(db, async () => {
+    await db.execAsync('PRAGMA secure_delete = ON');
+    await db.withTransactionAsync(async () => {
+      await db.execAsync(`
+        DELETE FROM balance_snapshots;
+        DELETE FROM card_statement_payments;
+        DELETE FROM try_transfers;
+        DELETE FROM asset_conversions;
+        DELETE FROM actual_expenses;
+        DELETE FROM card_statements;
+        DELETE FROM installment_plans;
+        DELETE FROM credit_cards;
+        DELETE FROM monthly_plans;
+        DELETE FROM flexible_monthly_plans;
+        DELETE FROM one_time_plans;
+        DELETE FROM gold_holdings;
+        DELETE FROM price_quotes;
+        DELETE FROM categories;
+        DELETE FROM accounts;
+      `);
+    });
+  });
 }

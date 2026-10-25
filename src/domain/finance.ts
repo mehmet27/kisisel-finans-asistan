@@ -77,8 +77,10 @@ export interface CategoryMonthlyTotal {
 
 export interface BalanceSnapshot {
   id: string;
-  kind: 'observed' | 'conversion' | 'expense';
+  kind: 'observed' | 'conversion' | 'expense' | 'transfer';
   expenseId?: string | null;
+  transferId?: string | null;
+  explanation?: string | null;
   accountId: string;
   observedOn: string;
   actualMinor: number;
@@ -109,6 +111,27 @@ export interface CardStatement {
   paidOn: string | null;
   paidAt: string | null;
   paidAmountMinor: number | null;
+  paidTotalMinor?: number;
+  remainingDebtMinor?: number;
+  payments?: CardStatementPayment[];
+}
+
+export interface CardStatementPayment {
+  id: string;
+  statementId: string;
+  paymentAccountId: string;
+  amountMinor: number;
+  paidOn: string;
+  paidAt: string;
+}
+
+export interface TryTransfer {
+  id: string;
+  requestId: string;
+  sourceAccountId: string;
+  targetAccountId: string;
+  amountMinor: number;
+  occurredAt: string;
 }
 
 export interface InstallmentPlan {
@@ -127,6 +150,8 @@ export interface CardPayment {
   paymentDate: string;
   amountMinor: number;
   source: 'actual' | 'estimate';
+  paymentId?: string;
+  recorded?: boolean;
 }
 
 export interface CashFlowEvent {
@@ -217,24 +242,35 @@ export function cardPaymentsThrough(
       const actual = statements.find((statement) => statement.cardId === card.id && statement.statementPeriod === period);
       if (actual) {
         if (actual.paymentAccountId !== account.id) continue;
-        // Paid statements use the real payment date; timestamps order same-day balance observations.
-        const paymentDate = actual.status === 'paid'
-          ? actual.paidOn
-          : (actual.dueDate <= account.balanceDate
-            ? localDateString(new Date(new Date(`${account.balanceDate}T12:00:00`).getTime() + 86400000))
-            : actual.dueDate);
-        const paidAfterSameDayBalance = actual.status === 'paid'
-          && paymentDate === account.balanceDate
-          && !!actual.paidAt && !!account.balanceRecordedAt
-          && actual.paidAt > account.balanceRecordedAt;
-        if (!paymentDate || (paymentDate <= account.balanceDate && !paidAfterSameDayBalance)
-          || paymentDate > throughDate) continue;
-        payments.push({
-          cardId: card.id, statementPeriod: period, paymentAccountId: account.id,
-          paymentDate,
-          amountMinor: actual.status === 'paid' ? (actual.paidAmountMinor ?? 0) : actual.plannedPaymentMinor,
-          source: 'actual',
-        });
+        const recorded = actual.payments ?? (actual.status === 'paid' && actual.paidAmountMinor && actual.paidOn
+          ? [{ id: `legacy:${actual.id}`, statementId: actual.id,
+            paymentAccountId: actual.paymentAccountId, amountMinor: actual.paidAmountMinor,
+            paidOn: actual.paidOn, paidAt: actual.paidAt ?? `${actual.paidOn}T00:00:00.000Z` }]
+          : []);
+        for (const payment of recorded) {
+          const paidAfterSameDayBalance = payment.paidOn === account.balanceDate
+            && !!account.balanceRecordedAt && payment.paidAt > account.balanceRecordedAt;
+          if ((payment.paidOn <= account.balanceDate && !paidAfterSameDayBalance)
+            || payment.paidOn > throughDate) continue;
+          payments.push({
+            cardId: card.id, statementPeriod: period, paymentAccountId: account.id,
+            paymentDate: payment.paidOn, amountMinor: payment.amountMinor, source: 'actual',
+            paymentId: payment.id, recorded: true,
+          });
+        }
+        const paidTotal = actual.paidTotalMinor ?? recorded.reduce((sum, payment) => sum + payment.amountMinor, 0);
+        const plannedRemaining = Math.max(0, Math.min(
+          actual.actualAmountMinor - paidTotal, actual.plannedPaymentMinor - paidTotal,
+        ));
+        const plannedDate = actual.dueDate <= account.balanceDate
+          ? localDateString(new Date(new Date(`${account.balanceDate}T12:00:00`).getTime() + 86400000))
+          : actual.dueDate;
+        if (plannedRemaining > 0 && plannedDate > account.balanceDate && plannedDate <= throughDate) {
+          payments.push({
+            cardId: card.id, statementPeriod: period, paymentAccountId: account.id,
+            paymentDate: plannedDate, amountMinor: plannedRemaining, source: 'actual', recorded: false,
+          });
+        }
         continue;
       }
 
@@ -351,9 +387,9 @@ export function accountEventsThrough(
       date: payment.paymentDate, accountId: account.id, amountMinor: -payment.amountMinor,
       title: `${card?.name ?? 'Kart'} · ${payment.statementPeriod} ekstresi`,
       sourceKind: payment.source === 'actual' ? 'card_actual' : 'card_estimate',
-      sourceId: statement?.id ?? `${payment.cardId}:${payment.statementPeriod}`,
+      sourceId: payment.paymentId ?? statement?.id ?? `${payment.cardId}:${payment.statementPeriod}`,
       assumption: payment.source === 'actual'
-        ? (statement?.status === 'paid' ? 'Kaydedilen gerçek ödeme tarihi ve tutarı.' : 'Gerçek ekstre için planlanan ödeme; taksit tahmini ayrıca düşülmez.')
+        ? (payment.recorded ? 'Kaydedilen gerçek ödeme tarihi ve tutarı.' : 'Gerçek ekstre için kalan planlanan ödeme; taksit tahmini ayrıca düşülmez.')
         : includesScenarioInstallment
           ? 'Kartın temel tahmini ve senaryo taksiti aynı ekstre ödemesinde toplanır; ikinci ödeme eklenmez.'
           : 'Kart harcama ve taksit tahmini tek ekstre ödemesi olarak uygulanır.',

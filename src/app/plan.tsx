@@ -26,6 +26,7 @@ type CategoryTotals = Awaited<ReturnType<typeof listCategoryMonthlyTotals>>;
 export default function PlanScreen() {
   const db = useSQLiteContext();
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [ready, setReady] = useState(false);
   const [plans, setPlans] = useState<MonthlyPlan[]>([]);
   const [flexiblePlans, setFlexiblePlans] = useState<FlexibleMonthlyPlan[]>([]);
   const [oneTimePlans, setOneTimePlans] = useState<OneTimePlan[]>([]);
@@ -77,6 +78,7 @@ export default function PlanScreen() {
     setCategories(nextCategories);
     setActualExpenses(nextActual);
     setCategoryTotals(nextTotals);
+    setReady(true);
     setAccountId((current) => current ?? nextAccounts[0]?.id ?? null);
     setOneTimeAccountId((current) => current ?? nextAccounts[0]?.id ?? null);
     setFlexibleAccountId((current) => current ?? nextAccounts.find((account) => account.currency === 'TRY' && account.purpose === 'spending')?.id ?? null);
@@ -86,7 +88,7 @@ export default function PlanScreen() {
   }, [db, selectedMonth]);
 
   useFocusEffect(useCallback(() => {
-    refresh().catch(() => setError('Aylık plan okunamadı.'));
+    refresh().catch(() => { setError('Aylık plan okunamadı.'); setReady(true); });
   }, [refresh]));
 
   async function save() {
@@ -309,6 +311,7 @@ export default function PlanScreen() {
   return (
     <ScrollView style={sharedStyles.page} contentContainerStyle={sharedStyles.content} keyboardShouldPersistTaps="handled">
       <PageTitle eyebrow="GELİR VE GİDER" title="Gelir ve gider planı" subtitle="Düzenli, tek seferlik ve yaklaşık değişken kalemlerini ekle." />
+      {!ready ? <Notice body="Hesaplar ve gider planı yükleniyor." /> : null}
       <Notice body="Tarihli kalemler seçtiğin günde işlenir. Market ve ulaşım gibi değişken giderler için aylık bir bütçe girmen yeterli." />
       <ActionLink href="/forecast" title="Hesaplarda ay sonunda ne kalacağını gör" secondary />
       {error ? <Notice tone="error" body={error} /> : null}
@@ -341,7 +344,7 @@ export default function PlanScreen() {
             <Text style={sharedStyles.helper}>Her ay tekrar eder. 31 seçilirse kısa aylarda son gün kullanılır.</Text>
             <ActionButton title="Planı kaydet" onPress={save} disabled={savingAction !== null} loading={savingAction === 'regular'} />
           </>
-        ) : <Text style={sharedStyles.helper}>Önce bir hesap ekleyin.</Text>}
+        ) : <Text style={sharedStyles.helper}>{ready ? 'Önce bir hesap ekleyin.' : 'Hesaplar yükleniyor.'}</Text>}
       </SectionCard>
 
       <SectionCard>
@@ -357,7 +360,7 @@ export default function PlanScreen() {
             <Text style={sharedStyles.muted}>Planlanan: {formatMoney(total.plannedMinor, total.currency)}</Text>
             <Text style={sharedStyles.muted}>Gerçekleşen: {formatMoney(total.actualMinor, total.currency)}</Text>
           </View>
-        )) : <Text style={sharedStyles.helper}>Bu ay için kategorili plan veya gerçek harcama kaydı yok.</Text>}
+        )) : <Text style={sharedStyles.helper}>{ready ? 'Bu ay için gider planı veya gerçek harcama kaydı yok.' : 'Aylık özet yükleniyor.'}</Text>}
         <Text style={sharedStyles.helper}>Döviz tutarları kendi para biriminde ayrı gösterilir.</Text>
       </SectionCard>
 
@@ -410,6 +413,7 @@ export default function PlanScreen() {
             {actualConfirming ? (
               <View style={styles.confirmBox}>
                 <Text style={styles.confirmTitle}>Harcama ve bakiye değişimi onaylansın mı?</Text>
+                <Text style={sharedStyles.helper}>Bu harcama son girdiğin bakiyeye dahil değilse kaydet; hesap bakiyesi tutar kadar azalacak.</Text>
                 <Text style={sharedStyles.helper}>{actualAccount?.name ?? 'Seçilen hesap'} · {formatMoney(actualAccount?.balanceMinor ?? 0, 'TRY')} → {formatMoney((actualAccount?.balanceMinor ?? 0) - (parseAmountMinor(actualAmount) ?? 0), 'TRY')}</Text>
                 <Text style={sharedStyles.helper}>{actualPlanLink ? 'Seçilen gider planıyla eşleşecek.' : 'Serbest harcama olarak kaydedilecek.'}</Text>
                 <ActionButton title="Evet, harcamayı kaydet" onPress={saveActualExpense} disabled={savingAction !== null} loading={savingAction === 'actual'} />
@@ -417,7 +421,7 @@ export default function PlanScreen() {
               </View>
             ) : <ActionButton title="Gerçek harcamayı kaydet" onPress={confirmActualExpense} disabled={savingAction !== null} />}
           </>
-        ) : <Text style={sharedStyles.helper}>Gerçek harcama eklemek için önce TL kullanım hesabı oluştur.</Text>}
+        ) : <Text style={sharedStyles.helper}>{ready ? 'Gerçek harcama eklemek için önce TL kullanım hesabı oluştur.' : 'Hesaplar yükleniyor.'}</Text>}
       </SectionCard>
 
       {actualExpenses.length ? <Text style={sharedStyles.sectionTitle}>{selectedMonth} gerçek harcamaları</Text> : null}
@@ -505,7 +509,7 @@ export default function PlanScreen() {
           </SectionCard>
         );
       })}
-      {plans.length === 0 && flexiblePlans.length === 0 && oneTimePlans.length === 0 ? <Notice title="Plan henüz boş" body="Önce bir gelir veya gider ekleyerek ay sonu tahminini oluşturmaya başla." /> : null}
+      {ready && plans.length === 0 && flexiblePlans.length === 0 && oneTimePlans.length === 0 ? <Notice title="Plan henüz boş" body="Önce bir gelir veya gider ekleyerek ay sonu tahminini oluşturmaya başla." /> : null}
       <SectionCard>
         <Text style={sharedStyles.cardTitle}>Yeni tek seferlik kalem</Text>
         {accounts.length ? (
@@ -533,7 +537,7 @@ export default function PlanScreen() {
             <Text style={sharedStyles.helper}>Bugün veya ileri tarih seç. Bugünkü kalem son bakiye girişinden sonra planlandıysa tahmine katılır; yeni bakiye girdiğinde tekrar işlenmez.</Text>
             <ActionButton title="Tek seferlik kalemi kaydet" onPress={saveOneTime} disabled={savingAction !== null} loading={savingAction === 'oneTime'} />
           </>
-        ) : <Text style={sharedStyles.helper}>Önce bir hesap ekle.</Text>}
+        ) : <Text style={sharedStyles.helper}>{ready ? 'Önce bir hesap ekle.' : 'Hesaplar yükleniyor.'}</Text>}
       </SectionCard>
       <SectionCard>
         <Text style={sharedStyles.cardTitle}>Yeni değişken gider bütçesi</Text>
@@ -554,7 +558,7 @@ export default function PlanScreen() {
             <TextInput accessibilityLabel="Aylık değişken gider tutarı" value={flexibleAmount} onChangeText={setFlexibleAmount} keyboardType="decimal-pad" placeholder="Örnek: 5000,00" style={sharedStyles.input} />
             <ActionButton title="Bütçeyi kaydet" onPress={saveFlexible} disabled={savingAction !== null} loading={savingAction === 'flexible'} />
           </>
-        ) : <Text style={sharedStyles.helper}>Değişken gider eklemek için önce bir TL kullanım hesabı oluştur.</Text>}
+        ) : <Text style={sharedStyles.helper}>{ready ? 'Değişken gider eklemek için önce bir TL kullanım hesabı oluştur.' : 'Hesaplar yükleniyor.'}</Text>}
       </SectionCard>
     </ScrollView>
   );

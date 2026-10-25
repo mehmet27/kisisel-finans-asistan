@@ -15,6 +15,7 @@ type SnapshotHistoryMap = Record<string, BalanceSnapshot[]>;
 export default function AccountsScreen() {
   const db = useSQLiteContext();
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [ready, setReady] = useState(false);
   const [snapshots, setSnapshots] = useState<SnapshotMap>({});
   const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryMap>({});
   const [flexiblePlans, setFlexiblePlans] = useState<FlexibleMonthlyPlan[]>([]);
@@ -26,6 +27,7 @@ export default function AccountsScreen() {
   const [editing, setEditing] = useState<Account | null>(null);
   const [newBalance, setNewBalance] = useState('');
   const [remainingFlexible, setRemainingFlexible] = useState('');
+  const [balanceExplanation, setBalanceExplanation] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [savingAction, setSavingAction] = useState<'account' | 'balance' | null>(null);
@@ -41,10 +43,11 @@ export default function AccountsScreen() {
     setQuotes(nextQuotes);
     setSnapshots(Object.fromEntries(nextAccounts.map((account, index) => [account.id, nextSnapshots[index]])));
     setSnapshotHistory(Object.fromEntries(nextAccounts.map((account, index) => [account.id, nextHistory[index]])));
+    setReady(true);
   }, [db]);
 
   useFocusEffect(useCallback(() => {
-    refresh().catch(() => setError('Hesaplar okunamadı.'));
+    refresh().catch(() => { setError('Hesaplar okunamadı.'); setReady(true); });
   }, [refresh]));
 
   async function saveAccount() {
@@ -80,10 +83,11 @@ export default function AccountsScreen() {
     setSavingAction('balance');
     setError('');
     try {
-      const snapshot = await updateBalance(db, editing, amount, remaining);
+      const snapshot = await updateBalance(db, editing, amount, remaining, balanceExplanation.trim() || null);
       setEditing(null);
       setNewBalance('');
       setRemainingFlexible('');
+      setBalanceExplanation('');
       await refresh();
       const difference = snapshot.differenceMinor ?? 0;
       setNotice(`Bakiye güncellendi. Önceki tahmine göre fark: ${formatMoney(difference, editing.currency)}. Bu fark tek başına harcama olarak sınıflandırılmaz.`);
@@ -97,9 +101,11 @@ export default function AccountsScreen() {
   return (
     <ScrollView style={sharedStyles.page} contentContainerStyle={sharedStyles.content} keyboardShouldPersistTaps="handled">
       <PageTitle eyebrow="BAKİYELER" title="Hesaplar" subtitle="Paranı hesabında bulunduğu para birimiyle takip et." />
+      {!ready ? <Notice body="Hesaplar yükleniyor." /> : null}
       {error ? <Notice tone="error" body={error} /> : null}
       {notice ? <Notice body={notice} /> : null}
-      {accounts.length === 0 ? (
+      <ActionLink href="/transfers" title="Hesaplar arası TL aktar" secondary />
+      {ready && accounts.length === 0 ? (
         <Notice title="Henüz hesap yok" body="İlk hesabını ve güncel bakiyesini aşağıdaki formdan ekle." />
       ) : null}
       {accounts.length > 0 ? <Text style={sharedStyles.sectionTitle}>Kayıtlı hesaplar</Text> : null}
@@ -144,6 +150,7 @@ export default function AccountsScreen() {
                 setEditing(account);
                 setNewBalance('');
                 setRemainingFlexible(account.remainingFlexibleMinor === null ? '' : (account.remainingFlexibleMinor / 100).toFixed(2).replace('.', ','));
+                setBalanceExplanation('');
                 setError('');
               }}
             />
@@ -155,11 +162,14 @@ export default function AccountsScreen() {
                 {snapshotHistory[account.id].map((entry) => (
                   <View key={entry.id} style={styles.historyItem}>
                     <Text style={styles.historyAmount}>{formatMoney(entry.actualMinor, account.currency)} · {entry.observedOn}</Text>
-                    <Text style={sharedStyles.muted}>{entry.kind === 'conversion' ? 'Bozdurma veya satış sonrası bakiye' : entry.kind === 'expense' ? 'Gerçek harcama sonrası bakiye' : 'Girilen bakiye'}</Text>
+                    <Text style={sharedStyles.muted}>{entry.kind === 'conversion' ? 'Bozdurma veya satış sonrası bakiye' : entry.kind === 'expense' ? 'Gerçek harcama sonrası bakiye' : (entry.kind as string) === 'transfer' ? 'Hesaplar arası aktarım sonrası bakiye' : 'Girilen bakiye'}</Text>
+                    {entry.kind === 'observed' && entry.explanation ? <Text style={sharedStyles.helper}>Fark açıklaması: {entry.explanation}</Text> : null}
                     {entry.kind === 'observed' ? (
                       <InlineDelete itemName="Bakiye kaydını" onDelete={async () => { await deleteLatestObservedSnapshot(db, entry.id); await refresh(); setNotice('Son bakiye girişi silindi; hesap önceki bakiyeye döndü.'); }} disabled={savingAction !== null} detail="Yalnız en son bakiye girişi, arada bozdurma veya satış yoksa geri alınabilir." />
                     ) : entry.kind === 'expense'
                       ? <ActionLink href="/plan" title="Harcamayı gider planında gör" secondary />
+                      : (entry.kind as string) === 'transfer'
+                        ? <ActionLink href="/transfers" title="Aktarımı hesap geçmişinde gör" secondary />
                       : <ActionLink href="/savings" title="İşlemi birikim geçmişinde gör" secondary />}
                   </View>
                 ))}
@@ -195,6 +205,15 @@ export default function AccountsScreen() {
               <Text style={sharedStyles.helper}>Market, ulaşım gibi tarihsiz giderlerin kalan tahmini. Beklemiyorsan 0 yaz.</Text>
             </>
           ) : null}
+          <Text style={sharedStyles.label}>Tahmin farkının nedeni (isteğe bağlı)</Text>
+          <TextInput
+            accessibilityLabel="Bakiye farkının nedeni"
+            value={balanceExplanation}
+            onChangeText={setBalanceExplanation}
+            placeholder="Örnek: Unuttuğum market harcaması"
+            style={sharedStyles.input}
+          />
+          <Text style={sharedStyles.helper}>Açıklama, bu bakiye güncellemesinin geçmişinde saklanır.</Text>
           <ActionButton title="Yeni bakiyeyi kaydet" onPress={saveBalance} disabled={savingAction !== null} loading={savingAction === 'balance'} />
           <ActionButton title="Vazgeç" onPress={() => { setEditing(null); setError(''); }} secondary />
         </SectionCard>
